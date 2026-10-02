@@ -8,7 +8,8 @@ from database import get_connection, initialize_database
 from task_states import TaskStatus, validate_transition
 import json
 from typing import Literal
-
+from pathlib import Path
+from fastapi.responses import FileResponse
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_database()
@@ -278,3 +279,33 @@ def decide_approval(
         raise
     finally:
         connection.close()
+    
+@app.get("/organizations/{organization_id}/vendors/{vendor_id}")
+def get_vendor(organization_id: str, vendor_id: str):
+    connection = get_connection()
+
+    try:
+        row = connection.execute(
+            """
+            SELECT id, organization_id, legal_name, contact_email,
+                   registered_address, service_category, created_at
+            FROM vendors
+            WHERE id = ? AND organization_id = ?
+            """,
+            (vendor_id, organization_id),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Vendor not found",
+        )
+
+    return dict(row)
+
+@app.get("/portal", include_in_schema=False)
+def vendor_portal():
+    page = Path(__file__).resolve().parent / "static" / "vendor.html"
+    return FileResponse(page)

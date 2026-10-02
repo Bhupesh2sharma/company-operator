@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from vendor_tools import search_vendors
-
+from approvals import VendorProposal
 from file_tools import read_company_file, list_company_files
 class ReadFileArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -95,6 +95,28 @@ def execute_tool(
     }
 
 def get_tool_definitions() -> list[dict]:
+    definitions = []
+
+    for name, tool in TOOL_REGISTRY.items():
+        definitions.append({
+            "name": name,
+            "description": tool["description"],
+            "parameters": tool["arguments_model"].model_json_schema(),
+        })
+
+    definitions.append({
+        "name": "request_vendor_approval",
+        "description": (
+            "Request human approval to create a vendor using the "
+            "exact proposed details. Read the company policy and "
+            "vendor documents and check existing vendors first. "
+            "Do not invent missing information. "
+            "This pauses the task; it does not approve or create a vendor."
+        ),
+        "parameters": VendorProposal.model_json_schema(),
+    })
+
+    return definitions
     definitions = []
 
     for name, tool in TOOL_REGISTRY.items():
