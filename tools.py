@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from vendor_tools import search_vendors
 
 from file_tools import read_company_file, list_company_files
-
 class ReadFileArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -9,7 +9,10 @@ class ReadFileArguments(BaseModel):
 
 class ListFilesArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+class SearchVendorsArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
 
+    legal_name: str = Field(min_length=1, max_length=200)
 TOOL_REGISTRY = {
     "read_company_file": {
         "description": "Read a text document inside the current company's folder.",
@@ -20,6 +23,16 @@ TOOL_REGISTRY = {
         "description": "List available text documents for the current company.",
         "arguments_model": ListFilesArguments,
         "handler": list_company_files,
+    },
+        "search_vendors": {
+        "description": (
+            "Search the current company's vendor database by legal name. "
+            "Matches ignore capitalization and repeated whitespace. "
+            "An empty result means no normalized exact match; "
+            "it does not rule out spelling variations."
+        ),
+        "arguments_model": SearchVendorsArguments,
+        "handler": search_vendors,
     },
 }
 

@@ -30,6 +30,56 @@ def initialize_database():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS task_checkpoints (
+                task_id TEXT PRIMARY KEY,
+                history_json TEXT NOT NULL,
+                completed_calls INTEGER NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS vendors (
+                id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                legal_name TEXT NOT NULL,
+                legal_name_key TEXT NOT NULL,
+                contact_email TEXT NOT NULL,
+                registered_address TEXT NOT NULL,
+                service_category TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (organization_id, legal_name_key)
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS approvals (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'approved', 'rejected')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                decided_at TEXT
+            )
+        """)
+
+        connection.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                one_pending_approval_per_task
+            ON approvals (task_id)
+            WHERE status = 'pending'
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS vendor_creation_receipts (
+                approval_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL,
+                vendor_id TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         connection.commit()
     finally:
         connection.close()

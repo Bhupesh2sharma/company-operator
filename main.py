@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 
 from database import get_connection, initialize_database
 from task_states import TaskStatus, validate_transition
-
+import json
+from typing import Literal
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -20,7 +21,8 @@ app = FastAPI(title="Company Operator", lifespan=lifespan)
 class TaskCreate(BaseModel):
     goal: str = Field(min_length=5, max_length=2000)
     organization_id: str = Field(min_length=1, max_length=100)
-
+class ApprovalDecision(BaseModel):
+    decision: Literal["approved", "rejected"]
 
 @app.get("/health")
 def health_check():
@@ -145,5 +147,134 @@ def get_task_events(task_id: str):
             "events": [dict(row) for row in rows],
         }
 
+    finally:
+        connection.close()
+    
+@app.get("/approvals/{approval_id}")
+def get_approval(approval_id: str):
+    connection = get_connection()
+
+    try:
+        row = connection.execute(
+            """
+            SELECT id, task_id, organization_id, action,
+                   payload_json, status, created_at, decided_at
+            FROM approvals
+            WHERE id = ?
+            """,
+            (approval_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Approval not found",
+        )
+
+    result = dict(row)
+    result["proposal"] = json.loads(result.pop("payload_json"))
+
+    return result
+
+@app.post("/approvals/{approval_id}/decision")
+def decide_approval(
+    approval_id: str,
+    decision: ApprovalDecision,
+):
+    connection = get_connection()
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        approval = connection.execute(
+            "SELECT * FROM approvals WHERE id = ?",
+            (approval_id,),
+        ).fetchone()
+
+        if approval is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Approval not found",
+            )
+
+        if approval["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail="This approval has already been decided",
+            )
+
+        task = connection.execute(
+            "SELECT * FROM tasks WHERE id = ?",
+            (approval["task_id"],),
+        ).fetchone()
+
+        if task is None:
+            raise HTTPException(
+                status_code=409,
+                detail="The approval's task no longer exists",
+            )
+
+        if task["organization_id"] != approval["organization_id"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Approval and task organization do not match",
+            )
+
+        current_status = TaskStatus(task["status"])
+
+        if current_status != TaskStatus.WAITING_FOR_APPROVAL:
+            raise HTTPException(
+                status_code=409,
+                detail="Task is not waiting for approval",
+            )
+
+        next_status = (
+            TaskStatus.QUEUED
+            if decision.decision == "approved"
+            else TaskStatus.CANCELLED
+        )
+
+        validate_transition(current_status, next_status)
+
+        connection.execute(
+            """
+            UPDATE approvals
+            SET status = ?, decided_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (decision.decision, approval_id),
+        )
+
+        connection.execute(
+            "UPDATE tasks SET status = ? WHERE id = ?",
+            (next_status.value, task["id"]),
+        )
+
+        connection.execute(
+            """
+            INSERT INTO task_events (task_id, event_type, message)
+            VALUES (?, ?, ?)
+            """,
+            (
+                task["id"],
+                f"approval_{decision.decision}",
+                f"Approval {approval_id}: {decision.decision}",
+            ),
+        )
+
+        connection.commit()
+
+        return {
+            "approval_id": approval_id,
+            "status": decision.decision,
+            "task_id": task["id"],
+            "task_status": next_status.value,
+        }
+
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         connection.close()
