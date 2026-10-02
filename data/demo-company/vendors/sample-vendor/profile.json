@@ -1,0 +1,7 @@
+{
+    "legal_name": "Sample Vendor LLP",
+    "contact_email": "operations@example.com",
+    "registered_address": "10 Demo Street, Example City",
+    "service_category": "IT services",
+    "synthetic": true
+  }
