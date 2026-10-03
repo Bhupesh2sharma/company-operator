@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Company Operator</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: #f4f6fa;
+      color: #172033;
+      font-family: system-ui, sans-serif;
+    }
+
+    main {
+      max-width: 1100px;
+      margin: 48px auto;
+      padding: 0 24px;
+    }
+
+    h1 { margin-bottom: 8px; }
+    .muted { color: #586579; }
+
+    form {
+      display: flex;
+      align-items: end;
+      flex-wrap: wrap;
+      gap: 16px;
+      background: white;
+      padding: 24px;
+      border: 1px solid #dbe2ec;
+      border-radius: 12px;
+      margin: 28px 0 16px;
+    }
+
+    label {
+      display: grid;
+      gap: 8px;
+      flex: 1;
+      min-width: 220px;
+      font-weight: 600;
+    }
+
+    input, button {
+      font: inherit;
+      padding: 12px 14px;
+      border-radius: 8px;
+    }
+
+    input {
+      width: 100%;
+      border: 1px solid #b8c3d4;
+    }
+
+    button {
+      background: #2455df;
+      color: white;
+      border: 0;
+      cursor: pointer;
+    }
+
+    button:disabled { opacity: .6; cursor: wait; }
+
+    #message { min-height: 24px; }
+    #message[data-error="true"] { color: #a52222; }
+
+    #tasks {
+      display: grid;
+      gap: 14px;
+      margin-top: 20px;
+    }
+
+    article {
+      background: white;
+      border: 1px solid #dbe2ec;
+      border-radius: 12px;
+      padding: 22px;
+    }
+
+    .task-heading {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    h2 {
+      font-size: 17px;
+      line-height: 1.5;
+      margin: 0;
+      flex: 1;
+      min-width: 200px;
+      overflow-wrap: anywhere;
+    }
+
+    .badge {
+      display: inline-block;
+      background: #edf0f5;
+      color: #39465a;
+      padding: 5px 10px;
+      border-radius: 20px;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .badge[data-status="completed"] {
+      background: #e0f4e8;
+      color: #17643a;
+    }
+
+    .badge[data-status="failed"] {
+      background: #fde7e7;
+      color: #a52222;
+    }
+
+    .badge[data-status="waiting_for_input"],
+    .badge[data-status="waiting_for_approval"] {
+      background: #fff0cc;
+      color: #805600;
+    }
+
+    .badge[data-status="running"],
+    .badge[data-status="verifying"] {
+      background: #e4edff;
+      color: #244eaa;
+    }
+
+    .metadata {
+      font-size: 13px;
+      line-height: 1.7;
+      overflow-wrap: anywhere;
+      margin: 14px 0;
+    }
+
+    .links { display: flex; gap: 20px; flex-wrap: wrap; }
+    a { color: #2455df; }
+
+    .empty {
+      text-align: center;
+      padding: 40px;
+      border: 1px dashed #b8c3d4;
+      border-radius: 12px;
+      color: #586579;
+    }
+    [hidden] { display: none !important; }
+
+select, textarea {
+  width: 100%;
+  font: inherit;
+  padding: 12px 14px;
+  border: 1px solid #b8c3d4;
+  border-radius: 8px;
+  background: white;
+}
+
+textarea { resize: vertical; }
+#create-message { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Company Operator</h1>
+      <p class="muted">Review company tasks and their outcomes.</p>
+    </header>
+
+    <form id="company-form">
+      <label for="organization-id">
+        Organization ID
+        <input
+          id="organization-id"
+          value="demo-company"
+          required
+          maxlength="100"
+          pattern="[a-zA-Z0-9_-]+"
+        >
+      </label>
+      <button id="refresh-button" type="submit">Refresh tasks</button>
+    </form>
+    <form id="create-task-form">
+        <h2 style="flex-basis: 100%">Create a task</h2>
+      
+        <label>
+          Task type
+          <select id="task-type">
+            <option value="general">Vendor onboarding / general</option>
+            <option value="inspect_vendor">Inspect an existing vendor</option>
+          </select>
+        </label>
+      
+        <label id="vendor-target-label" hidden>
+          Vendor ID
+          <input id="target-vendor-id" maxlength="36">
+        </label>
+      
+        <label style="flex-basis: 100%">
+          Goal
+          <textarea
+            id="task-goal"
+            rows="4"
+            minlength="5"
+            maxlength="2000"
+            required
+          ></textarea>
+        </label>
+      
+        <p class="muted" style="flex-basis: 100%">
+          Uses the Organization ID above. Creates a task for review before queuing.
+        </p>
+      
+        <button id="create-button" type="submit">Create task</button>
+        <p id="create-message" role="status" aria-live="polite"></p>
+      </form>
+    <p id="message" role="status" aria-live="polite"></p>
+    <section id="tasks" aria-label="Company tasks"></section>
+  </main>
+
+  <script>
+    const form = document.querySelector("#company-form");
+    const organizationInput = document.querySelector("#organization-id");
+    const refreshButton = document.querySelector("#refresh-button");
+    const message = document.querySelector("#message");
+    const tasksContainer = document.querySelector("#tasks");
+
+    let requestVersion = 0;
+
+    function showMessage(text, isError = false) {
+      message.textContent = text;
+      message.dataset.error = String(isError);
+    }
+
+    function createLink(label, path) {
+      const link = document.createElement("a");
+      link.textContent = label;
+      link.href = path;
+      link.target = "_blank";
+      link.rel = "noopener";
+      return link;
+    }
+
+    function renderTasks(tasks) {
+      tasksContainer.replaceChildren();
+
+      if (tasks.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "No tasks for this organization yet.";
+        tasksContainer.append(empty);
+        return;
+      }
+
+      for (const task of tasks) {
+        const card = document.createElement("article");
+        const heading = document.createElement("div");
+        heading.className = "task-heading";
+
+        const goal = document.createElement("h2");
+        goal.textContent = task.goal;
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.dataset.status = task.status;
+        badge.textContent = task.status.replaceAll("_", " ");
+
+        heading.append(goal, badge);
+
+        const metadata = document.createElement("div");
+        metadata.className = "metadata muted";
+
+        for (const text of [
+          `Task ID: ${task.id}`,
+          `Type: ${task.task_type}`,
+          `Created (UTC): ${task.created_at}`,
+        ]) {
+          const line = document.createElement("div");
+          line.textContent = text;
+          metadata.append(line);
+        }
+
+        const links = document.createElement("div");
+        links.className = "links";
+        const taskId = encodeURIComponent(task.id);
+
+        links.append(
+          createLink("Task details (JSON)", `/tasks/${taskId}`),
+          createLink("Task history (JSON)", `/tasks/${taskId}/events`)
+        );
+        if (task.status === "created") {
+          const queueButton = document.createElement("button");
+          queueButton.type = "button";
+          queueButton.textContent = "Queue task";
+
+          const queueMessage = document.createElement("span");
+          queueMessage.setAttribute("role", "status");
+
+          queueButton.addEventListener("click", async () => {
+            queueButton.disabled = true;
+            queueMessage.textContent = "Queuing...";
+
+            try {
+              const response = await fetch(
+                `/tasks/${taskId}/queue`,
+                { method: "POST" }
+              );
+
+              if (!response.ok) {
+                queueMessage.textContent =
+                  response.status === 409
+                    ? "Task state has changed. Refresh tasks."
+                    : `Could not queue task (HTTP ${response.status}). Refresh tasks before retrying.`;
+                return;
+              }
+
+              const updated = await response.json();
+
+              badge.dataset.status = updated.status;
+              badge.textContent = updated.status.replaceAll("_", " ");
+              queueButton.remove();
+              queueMessage.textContent =
+                "Queued. Refresh tasks to see progress.";
+            } catch (error) {
+              queueMessage.textContent =
+                "Could not confirm queuing. Refresh tasks before retrying.";
+            }
+          });
+
+          links.append(queueButton, queueMessage);
+        }
+        card.append(heading, metadata, links);
+        if (
+          task.status === "waiting_for_input" ||
+          task.status === "waiting_for_approval"
+        ) {
+          const actionPanel = document.createElement("div");
+          const reviewButton = document.createElement("button");
+          reviewButton.type = "button";
+          reviewButton.textContent = "Review required action";
+          reviewButton.style.marginTop = "16px";
+
+          reviewButton.addEventListener("click", async () => {
+            reviewButton.disabled = true;
+            await showPendingActions(task, actionPanel);
+            reviewButton.disabled = false;
+          });
+
+          card.append(reviewButton, actionPanel);
+        }
+        tasksContainer.append(card);
+      }
+    }
+
+    async function loadTasks() {
+      if (!form.reportValidity()) return;
+
+      const organizationId = organizationInput.value.trim();
+
+      if (!organizationId) {
+        showMessage("Enter an organization ID.", true);
+        return;
+      }
+
+      const version = ++requestVersion;
+      refreshButton.disabled = true;
+      tasksContainer.replaceChildren();
+      showMessage("Loading tasks...");
+
+      try {
+        const response = await fetch(
+          `/organizations/${encodeURIComponent(organizationId)}/tasks`,
+          { cache: "no-store" }
+        );
+
+        if (!response.ok) {
+          throw new Error(`Could not load tasks (HTTP ${response.status}).`);
+        }
+
+        const data = await response.json();
+
+        if (version !== requestVersion) return;
+
+        if (
+          data.organization_id !== organizationId ||
+          !Array.isArray(data.tasks)
+        ) {
+          throw new Error("The server returned an unexpected response.");
+        }
+
+        renderTasks(data.tasks);
+        showMessage(
+          `Showing ${data.tasks.length} task(s) for ${organizationId}. ` +
+          "Up to 100 newest tasks are shown."
+        );
+      } catch (error) {
+        if (version !== requestVersion) return;
+        tasksContainer.replaceChildren();
+        showMessage(error.message || "Could not load tasks.", true);
+      } finally {
+        if (version === requestVersion) {
+          refreshButton.disabled = false;
+        }
+      }
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loadTasks();
+    });
+
+    organizationInput.addEventListener("input", () => {
+      requestVersion += 1;
+      tasksContainer.replaceChildren();
+      refreshButton.disabled = false;
+      showMessage("Click Refresh tasks to load this organization.");
+    });
+
+    loadTasks();
+    const createForm = document.querySelector("#create-task-form");
+const taskType = document.querySelector("#task-type");
+const targetLabel = document.querySelector("#vendor-target-label");
+const targetInput = document.querySelector("#target-vendor-id");
+const goalInput = document.querySelector("#task-goal");
+const createButton = document.querySelector("#create-button");
+const createMessage = document.querySelector("#create-message");
+
+let creatingTask = false;
+
+taskType.addEventListener("change", () => {
+  const inspection = taskType.value === "inspect_vendor";
+  targetLabel.hidden = !inspection;
+  targetInput.required = inspection;
+
+  if (!inspection) targetInput.value = "";
+});
+
+createForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  if (creatingTask) return;
+  if (!form.reportValidity() || !createForm.reportValidity()) return;
+
+  const organizationId = organizationInput.value.trim();
+  const goal = goalInput.value.trim();
+
+  if (goal.length < 5) {
+    createMessage.textContent = "Enter a goal of at least 5 characters.";
+    return;
+  }
+
+  const payload = {
+    organization_id: organizationId,
+    goal,
+    task_type: taskType.value,
+  };
+
+  if (taskType.value === "inspect_vendor") {
+    const vendorId = targetInput.value.trim();
+    const uuidPattern =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    if (!uuidPattern.test(vendorId)) {
+      createMessage.textContent = "Enter a valid vendor UUID.";
+      return;
+    }
+
+    payload.target_vendor_id = vendorId;
+  }
+
+  creatingTask = true;
+  createButton.disabled = true;
+  organizationInput.disabled = true;
+  createMessage.textContent = "Creating task...";
+
+  try {
+    const response = await fetch("/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      createMessage.textContent =
+        `Task creation returned HTTP ${response.status}. ` +
+        "Check your inputs and refresh the task list before retrying.";
+      return;
+    }
+
+    const task = await response.json();
+
+    createMessage.textContent =
+      `Created task ${task.id} for ${organizationId}. ` +
+      "It has not been queued.";
+
+    goalInput.value = "";
+    await loadTasks();
+  } catch (error) {
+    createMessage.textContent =
+      "Could not confirm task creation. Refresh the task list " +
+      "before retrying—the server may have saved it.";
+  } finally {
+    creatingTask = false;
+    createButton.disabled = false;
+    organizationInput.disabled = false;
+  }
+});
+
+async function submitAction(path, payload) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    const detail = typeof data.detail === "string"
+      ? data.detail
+      : JSON.stringify(data.detail || data);
+
+    throw new Error(`HTTP ${response.status}: ${detail}`);
+  }
+
+  return data;
+}
+
+async function showPendingActions(task, panel) {
+  panel.replaceChildren();
+
+  const status = document.createElement("p");
+  status.setAttribute("role", "status");
+  status.textContent = "Loading required actions...";
+  panel.append(status);
+
+  try {
+    const response = await fetch(
+      `/tasks/${encodeURIComponent(task.id)}/pending-actions`,
+      { cache: "no-store" }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Could not load actions (HTTP ${response.status}).`);
+    }
+
+    const data = await response.json();
+
+    if (
+      data.task_id !== task.id ||
+      data.organization_id !== task.organization_id
+    ) {
+      throw new Error("The response does not match this task.");
+    }
+
+    status.textContent = "";
+
+    for (const request of data.input_requests) {
+      const answerForm = document.createElement("form");
+      const question = document.createElement("h3");
+      question.textContent = request.question;
+      question.style.flexBasis = "100%";
+      answerForm.append(question);
+
+      const fields = new Map();
+
+      for (const name of request.requested_fields) {
+        const label = document.createElement("label");
+        label.textContent = name.replaceAll("_", " ");
+
+        const input = document.createElement("input");
+        input.required = true;
+
+        const limits = {
+          legal_name: 200,
+          contact_email: 320,
+          registered_address: 1000,
+          service_category: 200,
+        };
+
+        input.maxLength = limits[name] || 1000;
+        label.append(input);
+        answerForm.append(label);
+        fields.set(name, input);
+      }
+
+      const submit = document.createElement("button");
+      submit.type = "submit";
+      submit.textContent = "Submit answer";
+
+      const feedback = document.createElement("p");
+      feedback.setAttribute("role", "status");
+
+      answerForm.append(submit, feedback);
+
+      let submitting = false;
+
+      answerForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (submitting) return;
+
+        const answers = {};
+
+        for (const [name, input] of fields) {
+          const value = input.value.trim();
+
+          if (!value) {
+            feedback.textContent = "Complete every requested field.";
+            return;
+          }
+
+          answers[name] = value;
+        }
+
+        submitting = true;
+        submit.disabled = true;
+        fields.forEach((input) => { input.disabled = true; });
+        feedback.textContent = "Submitting answer...";
+
+        try {
+          await submitAction(
+            `/input-requests/${encodeURIComponent(request.id)}/answer`,
+            { answers }
+          );
+
+          feedback.textContent =
+            "Answer saved. Task queued to continue. Refresh tasks for progress.";
+        } catch (error) {
+          feedback.textContent =
+            `${error.message} Review required action again before retrying.`;
+        }
+      });
+
+      panel.append(answerForm);
+    }
+
+    for (const approval of data.approvals) {
+      const section = document.createElement("section");
+
+      const title = document.createElement("h3");
+      title.textContent = "Review vendor creation";
+
+      const description = document.createElement("p");
+      description.textContent =
+        "Approval authorizes creation using exactly these details.";
+
+      const proposal = document.createElement("pre");
+      proposal.style.whiteSpace = "pre-wrap";
+      proposal.style.overflowWrap = "anywhere";
+      proposal.textContent = JSON.stringify(approval.proposal, null, 2);
+
+      const approve = document.createElement("button");
+      approve.type = "button";
+      approve.textContent = "Approve creation";
+
+      const reject = document.createElement("button");
+      reject.type = "button";
+      reject.textContent = "Reject";
+      reject.style.marginLeft = "12px";
+      reject.style.background = "#a52222";
+
+      const feedback = document.createElement("p");
+      feedback.setAttribute("role", "status");
+
+      if (approval.action !== "create_vendor") {
+        approve.disabled = true;
+        reject.disabled = true;
+        feedback.textContent = "This action is not supported by this page.";
+      }
+
+      let deciding = false;
+
+      async function decide(decision) {
+        if (deciding) return;
+        deciding = true;
+        approve.disabled = true;
+        reject.disabled = true;
+        feedback.textContent = "Saving decision...";
+
+        try {
+          const result = await submitAction(
+            `/approvals/${encodeURIComponent(approval.id)}/decision`,
+            { decision }
+          );
+
+          feedback.textContent =
+            `Decision saved: ${result.status}. ` +
+            `Task status: ${result.task_status}. Refresh tasks for progress.`;
+        } catch (error) {
+          feedback.textContent =
+            `${error.message} Review required action again before retrying.`;
+        }
+      }
+
+      approve.addEventListener("click", () => decide("approved"));
+      reject.addEventListener("click", () => decide("rejected"));
+
+      section.append(
+        title, description, proposal, approve, reject, feedback
+      );
+      panel.append(section);
+    }
+
+    if (!data.input_requests.length && !data.approvals.length) {
+      status.textContent = "No pending actions. Refresh the task list.";
+    }
+  } catch (error) {
+    status.textContent = error.message || "Could not load actions.";
+  }
+}
+  </script>
+</body>
+</html>

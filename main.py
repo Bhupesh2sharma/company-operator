@@ -48,6 +48,37 @@ class TaskCreate(BaseModel):
 class ApprovalDecision(BaseModel):
     decision: Literal["approved", "rejected"]
 
+
+@app.get("/organizations/{organization_id}/tasks")
+def list_organization_tasks(organization_id: str):
+    connection = get_connection()
+
+    try:
+        rows = connection.execute(
+            """
+            SELECT
+                id,
+                organization_id,
+                goal,
+                status,
+                task_type,
+                target_vendor_id,
+                created_at
+            FROM tasks
+            WHERE organization_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 100
+            """,
+            (organization_id,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    return {
+        "organization_id": organization_id,
+        "tasks": [dict(row) for row in rows],
+    }
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -583,3 +614,73 @@ def answer_input_request(request_id: str, body: InputAnswer):
         raise
     finally:
         connection.close()
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard():
+    page = Path(__file__).resolve().parent / "static" / "dashboard.html"
+    return FileResponse(page)
+
+@app.get("/tasks/{task_id}/pending-actions")
+def get_pending_actions(task_id: str):
+    connection = get_connection()
+
+    try:
+        task = connection.execute(
+            "SELECT * FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+
+        if task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
+
+        input_rows = connection.execute(
+            """
+            SELECT id, question, requested_fields_json, created_at
+            FROM input_requests
+            WHERE task_id = ?
+              AND organization_id = ?
+              AND status = 'pending'
+            ORDER BY created_at, id
+            """,
+            (task_id, task["organization_id"]),
+        ).fetchall()
+
+        approval_rows = connection.execute(
+            """
+            SELECT id, action, payload_json, created_at
+            FROM approvals
+            WHERE task_id = ?
+              AND organization_id = ?
+              AND status = 'pending'
+            ORDER BY created_at, id
+            """,
+            (task_id, task["organization_id"]),
+        ).fetchall()
+
+    finally:
+        connection.close()
+
+    input_requests = []
+    for row in input_rows:
+        item = dict(row)
+        item["requested_fields"] = json.loads(
+            item.pop("requested_fields_json")
+        )
+        input_requests.append(item)
+
+    approvals = []
+    for row in approval_rows:
+        item = dict(row)
+        item["proposal"] = json.loads(item.pop("payload_json"))
+        approvals.append(item)
+
+    return {
+        "task_id": task_id,
+        "organization_id": task["organization_id"],
+        "task_status": task["status"],
+        "input_requests": input_requests,
+        "approvals": approvals,
+    }
