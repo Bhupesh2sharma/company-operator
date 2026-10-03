@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from database import get_connection, initialize_database
 from task_states import TaskStatus, validate_transition
@@ -22,6 +22,26 @@ app = FastAPI(title="Company Operator", lifespan=lifespan)
 class TaskCreate(BaseModel):
     goal: str = Field(min_length=5, max_length=2000)
     organization_id: str = Field(min_length=1, max_length=100)
+
+    task_type: Literal["general", "inspect_vendor"] = "general"
+    target_vendor_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_task_target(self):
+        if self.task_type == "inspect_vendor":
+            if self.target_vendor_id is None:
+                raise ValueError(
+                    "Inspection tasks require target_vendor_id"
+                )
+        elif self.target_vendor_id is not None:
+            raise ValueError(
+                "target_vendor_id is only supported for inspection tasks"
+            )
+
+        return self
+
+    goal: str = Field(min_length=5, max_length=2000)
+    organization_id: str = Field(min_length=1, max_length=100)
 class ApprovalDecision(BaseModel):
     decision: Literal["approved", "rejected"]
 
@@ -33,15 +53,31 @@ def health_check():
 @app.post("/tasks", status_code=201)
 def create_task(task: TaskCreate):
     task_id = str(uuid4())
+    target_vendor_id = (
+        str(task.target_vendor_id)
+        if task.target_vendor_id is not None
+        else None
+    )
+
     connection = get_connection()
 
     try:
         connection.execute(
             """
-            INSERT INTO tasks (id, organization_id, goal, status)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO tasks (
+                id, organization_id, goal, status,
+                task_type, target_vendor_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (task_id, task.organization_id, task.goal, "created"),
+            (
+                task_id,
+                task.organization_id,
+                task.goal,
+                "created",
+                task.task_type,
+                target_vendor_id,
+            ),
         )
         connection.commit()
     finally:
@@ -52,8 +88,9 @@ def create_task(task: TaskCreate):
         "goal": task.goal,
         "organization_id": task.organization_id,
         "status": "created",
+        "task_type": task.task_type,
+        "target_vendor_id": target_vendor_id,
     }
-
 
 @app.get("/tasks/{task_id}")
 def get_task(task_id: str):

@@ -80,6 +80,22 @@ def initialize_database():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        task_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(tasks)")
+        }
+
+        if "task_type" not in task_columns:
+            connection.execute("""
+                ALTER TABLE tasks
+                ADD COLUMN task_type TEXT NOT NULL DEFAULT 'general'
+            """)
+
+        if "target_vendor_id" not in task_columns:
+            connection.execute("""
+                ALTER TABLE tasks
+                ADD COLUMN target_vendor_id TEXT
+            """)
         connection.commit()
     finally:
         connection.close()

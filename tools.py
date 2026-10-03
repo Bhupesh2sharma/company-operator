@@ -2,6 +2,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from vendor_tools import search_vendors
 from approvals import VendorProposal
 from file_tools import read_company_file, list_company_files
+from browser_tools import inspect_vendor_in_browser
 class ReadFileArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -13,6 +14,20 @@ class SearchVendorsArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     legal_name: str = Field(min_length=1, max_length=200)
+
+class InspectVendorArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    vendor_id: str = Field(
+        min_length=36,
+        max_length=36,
+        pattern=(
+            r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{12}$"
+        ),
+    )
+
 TOOL_REGISTRY = {
     "read_company_file": {
         "description": "Read a text document inside the current company's folder.",
@@ -33,6 +48,17 @@ TOOL_REGISTRY = {
         ),
         "arguments_model": SearchVendorsArguments,
         "handler": search_vendors,
+    },
+        "inspect_vendor_in_browser": {
+        "description": (
+            "Open the local vendor portal in a browser and inspect "
+            "a vendor using its known ID. Returns displayed fields "
+            "and a screenshot path. Use an ID obtained from a "
+            "vendor search or supplied by the user; do not invent one. "
+            "This reads an existing record and does not create a vendor."
+        ),
+        "arguments_model": InspectVendorArguments,
+        "handler": inspect_vendor_in_browser,
     },
 }
 
