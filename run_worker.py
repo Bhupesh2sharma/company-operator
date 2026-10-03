@@ -1,5 +1,6 @@
 import argparse
 import json
+import time
 
 from agent_loop import MAX_MODEL_CALLS, run_agent
 from checkpoints import load_checkpoint
@@ -156,6 +157,48 @@ def run_once(max_model_calls: int = MAX_MODEL_CALLS):
         process_task(task, max_model_calls)
 
 
+def watch_queue(
+    max_model_calls: int = MAX_MODEL_CALLS,
+    poll_seconds: int = 2,
+):
+    with worker_lock():
+        initialize_database()
+
+        print(
+            f"Watching the queue every {poll_seconds} seconds. "
+            "Press Ctrl+C to stop."
+        )
+
+        idle_message_shown = False
+
+        while True:
+            task = claim_next_task()
+
+            if task is None:
+                if not idle_message_shown:
+                    print("No queued tasks. Waiting...")
+                    idle_message_shown = True
+
+                time.sleep(poll_seconds)
+                continue
+
+            idle_message_shown = False
+            print("\nClaimed task:", task["id"])
+
+            try:
+                process_task(task, max_model_calls)
+            except Exception as error:
+                print(
+                    f"\nTask {task['id']} encountered "
+                    f"{type(error).__name__}: {error}"
+                )
+                print(
+                    "It will not be retried automatically. "
+                    "Check its status and history before resuming."
+                )
+                time.sleep(poll_seconds)
+
+
 def resume_task(
     task_id: str,
     max_model_calls: int = MAX_MODEL_CALLS,
@@ -185,13 +228,21 @@ def resume_task(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run one queued task or resume interrupted work."
+        description="Run, watch, or resume company tasks."
     )
 
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+
+    mode.add_argument(
         "--resume",
         metavar="TASK_ID",
         help="Resume a running or verifying task.",
+    )
+
+    mode.add_argument(
+        "--watch",
+        action="store_true",
+        help="Continuously process queued tasks.",
     )
 
     parser.add_argument(
@@ -203,12 +254,35 @@ def main():
         help="Total model-call allowance, including saved calls.",
     )
 
+    parser.add_argument(
+        "--poll-seconds",
+        type=int,
+        choices=range(1, 61),
+        default=2,
+        metavar="1-60",
+        help="Seconds between queue checks in watch mode.",
+    )
+
     args = parser.parse_args()
 
-    if args.resume:
-        resume_task(args.resume, args.max_model_calls)
-    else:
-        run_once(args.max_model_calls)
+    if not args.watch and args.poll_seconds != 2:
+        parser.error("--poll-seconds requires --watch")
+
+    try:
+        if args.resume:
+            resume_task(args.resume, args.max_model_calls)
+        elif args.watch:
+            watch_queue(
+                max_model_calls=args.max_model_calls,
+                poll_seconds=args.poll_seconds,
+            )
+        else:
+            run_once(args.max_model_calls)
+    except KeyboardInterrupt:
+        print(
+            "\nWorker stopped; lock released. "
+            "If interrupted during a task, check its state before resuming."
+        )
 
 
 if __name__ == "__main__":

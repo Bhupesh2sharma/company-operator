@@ -6,7 +6,8 @@ from tools import execute_tool
 from pydantic import ValidationError
 from input_requests import InputRequestArguments, request_vendor_input
 from approvals import VendorProposal, request_vendor_approval
-
+import time
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 def record_event(task_id: str, event_type: str, message: str):
     connection = get_connection()
 
@@ -109,6 +110,60 @@ def dispatch_task_tool(
             },
         }
 
+def dispatch_with_browser_retries(
+    task_id: str,
+    organization_id: str,
+    tool_name: str,
+    arguments: dict,
+) -> dict:
+    max_attempts = (
+        3 if tool_name == "inspect_vendor_in_browser" else 1
+    )
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return dispatch_task_tool(
+                task_id=task_id,
+                organization_id=organization_id,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+
+        except PlaywrightTimeoutError:
+            if attempt == max_attempts:
+                record_event(
+                    task_id,
+                    "tool_retries_exhausted",
+                    json.dumps({
+                        "tool": tool_name,
+                        "attempts": attempt,
+                        "error_type": "browser_timeout",
+                    }),
+                )
+                raise
+
+            delay_seconds = attempt
+
+            record_event(
+                task_id,
+                "tool_retry_scheduled",
+                json.dumps({
+                    "tool": tool_name,
+                    "failed_attempt": attempt,
+                    "next_attempt": attempt + 1,
+                    "max_attempts": max_attempts,
+                    "delay_seconds": delay_seconds,
+                    "error_type": "browser_timeout",
+                }),
+            )
+
+            print(
+                f"Browser attempt {attempt}/{max_attempts} timed out. "
+                f"Retrying in {delay_seconds} second(s)."
+            )
+            time.sleep(delay_seconds)
+
+
 def execute_task_tool(
     task_id: str,
     tool_name: str,
@@ -177,7 +232,7 @@ def execute_task_tool(
     )
 
     try:
-        result = dispatch_task_tool(
+        result = dispatch_with_browser_retries(
             task_id=task_id,
             organization_id=task["organization_id"],
             tool_name=tool_name,
