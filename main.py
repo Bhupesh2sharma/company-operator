@@ -3,6 +3,9 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
+from pydantic import ConfigDict, ValidationError, create_model
+
+from approvals import VendorProposal
 
 from database import get_connection, initialize_database
 from task_states import TaskStatus, validate_transition
@@ -346,3 +349,237 @@ def get_vendor(organization_id: str, vendor_id: str):
 def vendor_portal():
     page = Path(__file__).resolve().parent / "static" / "vendor.html"
     return FileResponse(page)
+
+@app.get("/input-requests/{request_id}")
+def get_input_request(request_id: str):
+    connection = get_connection()
+
+    try:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM input_requests
+            WHERE id = ?
+            """,
+            (request_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Input request not found",
+        )
+
+    result = dict(row)
+    result["requested_fields"] = json.loads(
+        result.pop("requested_fields_json")
+    )
+
+    answer_json = result.pop("answer_json")
+    result["answer"] = (
+        json.loads(answer_json)
+        if answer_json is not None
+        else None
+    )
+
+    return result
+
+
+class InputAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    answers: dict[str, str]
+
+
+@app.post("/input-requests/{request_id}/answer")
+def answer_input_request(request_id: str, body: InputAnswer):
+    connection = get_connection()
+
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        request = connection.execute(
+            "SELECT * FROM input_requests WHERE id = ?",
+            (request_id,),
+        ).fetchone()
+
+        if request is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Input request not found",
+            )
+
+        if request["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail="This input request has already been answered",
+            )
+
+        task = connection.execute(
+            "SELECT * FROM tasks WHERE id = ?",
+            (request["task_id"],),
+        ).fetchone()
+
+        if (
+            task is None
+            or task["organization_id"] != request["organization_id"]
+            or task["status"] != TaskStatus.WAITING_FOR_INPUT.value
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Task is not waiting for this input",
+            )
+
+        requested_fields = json.loads(
+            request["requested_fields_json"]
+        )
+
+        if set(body.answers) != set(requested_fields):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Answer exactly the requested fields",
+                    "requested_fields": requested_fields,
+                },
+            )
+
+        # Reuse the existing vendor field lengths and whitespace rules.
+        answer_model = create_model(
+            "RequestedVendorAnswers",
+            __config__=VendorProposal.model_config,
+            **{
+                name: (
+                    VendorProposal.model_fields[name].annotation,
+                    VendorProposal.model_fields[name],
+                )
+                for name in requested_fields
+            },
+        )
+
+        try:
+            answers = answer_model.model_validate(
+                body.answers
+            ).model_dump()
+        except ValidationError:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Answers must meet the vendor field requirements "
+                    "and cannot be blank."
+                ),
+            ) from None
+
+        checkpoint = connection.execute(
+            """
+            SELECT history_json
+            FROM task_checkpoints
+            WHERE task_id = ?
+            """,
+            (task["id"],),
+        ).fetchone()
+
+        if checkpoint is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Agent checkpoint is not ready. Try again shortly.",
+            )
+
+        history = json.loads(checkpoint["history_json"])
+
+        # The agent must have saved the request's tool output first.
+        last_item = history[-1] if history else {}
+        tool_result = {}
+
+        if last_item.get("type") == "function_call_output":
+            tool_result = json.loads(last_item["output"])
+
+        if not (
+            tool_result.get("ok") is True
+            and tool_result.get("tool") == "request_vendor_input"
+            and tool_result.get("data", {}).get("request_id")
+            == request_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Checkpoint does not end with this input request. "
+                    "Wait for the worker to finish saving it."
+                ),
+            )
+
+        history.append({
+            "role": "user",
+            "content": json.dumps({
+                "type": "vendor_input_answer",
+                "request_id": request_id,
+                "question": request["question"],
+                "answers": answers,
+                "note": (
+                    "These answers supply vendor information. "
+                    "They do not approve vendor creation."
+                ),
+            }),
+        })
+
+        validate_transition(
+            TaskStatus(task["status"]),
+            TaskStatus.QUEUED,
+        )
+
+        connection.execute(
+            """
+            UPDATE input_requests
+            SET status = 'answered',
+                answer_json = ?,
+                answered_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (json.dumps(answers), request_id),
+        )
+
+        connection.execute(
+            """
+            UPDATE task_checkpoints
+            SET history_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = ?
+            """,
+            (json.dumps(history), task["id"]),
+        )
+
+        connection.execute(
+            "UPDATE tasks SET status = ? WHERE id = ?",
+            (TaskStatus.QUEUED.value, task["id"]),
+        )
+
+        connection.execute(
+            """
+            INSERT INTO task_events (task_id, event_type, message)
+            VALUES (?, ?, ?)
+            """,
+            (
+                task["id"],
+                "input_answered",
+                json.dumps({
+                    "request_id": request_id,
+                    "answered_fields": requested_fields,
+                }),
+            ),
+        )
+
+        connection.commit()
+
+        return {
+            "request_id": request_id,
+            "status": "answered",
+            "task_id": task["id"],
+            "task_status": "queued",
+            "answers": answers,
+        }
+
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()

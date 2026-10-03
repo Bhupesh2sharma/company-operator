@@ -57,8 +57,13 @@ If the user only requests an assessment, provide an assessment.
 Do not request approval to create a vendor unless creation or
 onboarding is within the user's requested scope.
 
-If information is missing, conflicting, or a possible duplicate exists,
-explain the issue. Do not invent values or request approval prematurely.
+For onboarding, if required vendor information is missing or conflicting,
+call request_vendor_input with a clear question and the affected fields.
+Never invent missing values or request creation approval prematurely.
+A request for input does not grant approval to create a vendor.
+
+If a possible duplicate exists, explain the issue and do not request
+creation approval.
 
 You may request approval, but you cannot approve your own proposal.
 An approval request does not mean the vendor has been created.
@@ -282,6 +287,24 @@ def run_agent(
                     "call_id": call.call_id,
                     "output": json.dumps(result),
                 })
+
+                if (
+                    call.name == "request_vendor_input"
+                    and result["ok"]
+                ):
+                    save_checkpoint(task_id, history, step)
+
+                    request = result["data"]
+
+                    print("\nWaiting for user input.")
+                    print("Request ID:", request["request_id"])
+                    print("Question:", request["question"])
+                    print(
+                        "Requested fields:",
+                        ", ".join(request["requested_fields"]),
+                    )
+                    print("No vendor has been created.")
+                    return
 
                 if (
                     call.name == "request_vendor_approval"

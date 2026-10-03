@@ -4,7 +4,7 @@ from database import get_connection
 from task_states import TaskStatus
 from tools import execute_tool
 from pydantic import ValidationError
-
+from input_requests import InputRequestArguments, request_vendor_input
 from approvals import VendorProposal, request_vendor_approval
 
 def record_event(task_id: str, event_type: str, message: str):
@@ -28,6 +28,43 @@ def dispatch_task_tool(
     tool_name: str,
     arguments: dict,
 ) -> dict:
+    if tool_name == "request_vendor_input":
+        try:
+            request = InputRequestArguments.model_validate(arguments)
+            result = request_vendor_input(
+                task_id=task_id,
+                request=request,
+            )
+
+            return {
+                "ok": True,
+                "tool": tool_name,
+                "data": result,
+            }
+
+        except ValidationError:
+            return {
+                "ok": False,
+                "tool": tool_name,
+                "error": {
+                    "type": "invalid_arguments",
+                    "message": (
+                        "Provide a question and a nonempty list of unique "
+                        "vendor field names. Extra fields are not allowed."
+                    ),
+                },
+            }
+
+        except ValueError as error:
+            return {
+                "ok": False,
+                "tool": tool_name,
+                "error": {
+                    "type": "input_request_rejected",
+                    "message": str(error),
+                },
+            }
+
     if tool_name != "request_vendor_approval":
         return execute_tool(
             tool_name,

@@ -80,6 +80,44 @@ def initialize_database():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS input_requests (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL,
+                question TEXT NOT NULL,
+                requested_fields_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'answered')),
+                answer_json TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                answered_at TEXT,
+                CHECK (
+                    (
+                        status = 'pending'
+                        AND answer_json IS NULL
+                        AND answered_at IS NULL
+                    )
+                    OR
+                    (
+                        status = 'answered'
+                        AND answer_json IS NOT NULL
+                        AND answered_at IS NOT NULL
+                    )
+                )
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                one_pending_input_request_per_task
+            ON input_requests(task_id)
+            WHERE status = 'pending'
+            """
+        )
         task_columns = {
             row["name"]
             for row in connection.execute("PRAGMA table_info(tasks)")

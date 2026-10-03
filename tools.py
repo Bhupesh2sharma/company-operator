@@ -3,6 +3,7 @@ from vendor_tools import search_vendors
 from approvals import VendorProposal
 from file_tools import read_company_file, list_company_files
 from browser_tools import inspect_vendor_in_browser
+from input_requests import InputRequestArguments
 class ReadFileArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -131,6 +132,7 @@ def get_tool_definitions() -> list[dict]:
         })
 
     definitions.append({
+        
         "name": "request_vendor_approval",
         "description": (
             "Request human approval to create a vendor using the "
@@ -139,8 +141,22 @@ def get_tool_definitions() -> list[dict]:
             "Do not invent missing information. "
             "This pauses the task; it does not approve or create a vendor."
         ),
+        
         "parameters": VendorProposal.model_json_schema(),
+    }
+    
+    )
+
+    definitions.append({
+        "name": "request_vendor_input",
+        "description": (
+            "Ask the user for missing or conflicting vendor information "
+            "and pause the task. Specify the vendor fields needing answers. "
+            "This does not approve or create a vendor."
+        ),
+        "parameters": InputRequestArguments.model_json_schema(),
     })
+    
 
     return definitions
     definitions = []
