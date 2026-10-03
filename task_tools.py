@@ -93,14 +93,54 @@ def execute_task_tool(
     if task["status"] != TaskStatus.RUNNING.value:
         raise ValueError("Task must be running to execute tools")
 
+    # Enforce inspection permissions before dispatching any tool.
+    if task["task_type"] == "inspect_vendor":
+        error_message = None
+
+        if tool_name != "inspect_vendor_in_browser":
+            error_message = (
+                "Inspection tasks may only use inspect_vendor_in_browser."
+            )
+        elif not task["target_vendor_id"]:
+            error_message = "Inspection task is missing target_vendor_id."
+        elif (
+            not isinstance(arguments, dict)
+            or arguments.get("vendor_id") != task["target_vendor_id"]
+        ):
+            error_message = (
+                "Inspection must use the task's exact target_vendor_id."
+            )
+
+        if error_message is not None:
+            record_event(
+                task_id,
+                "tool_denied",
+                json.dumps({
+                    "tool": tool_name,
+                    "reason": error_message,
+                }),
+            )
+
+            return {
+                "ok": False,
+                "tool": tool_name,
+                "error": {
+                    "type": "permission_denied",
+                    "message": error_message,
+                },
+            }
+
     record_event(
         task_id,
         "tool_started",
-        json.dumps({"tool": tool_name, "arguments": arguments}),
+        json.dumps({
+            "tool": tool_name,
+            "arguments": arguments,
+        }),
     )
 
     try:
-            result = dispatch_task_tool(
+        result = dispatch_task_tool(
             task_id=task_id,
             organization_id=task["organization_id"],
             tool_name=tool_name,
@@ -119,7 +159,11 @@ def execute_task_tool(
 
     event_type = "tool_succeeded" if result["ok"] else "tool_failed"
 
-    summary = {"tool": tool_name, "ok": result["ok"]}
+    summary = {
+        "tool": tool_name,
+        "ok": result["ok"],
+    }
+
     if not result["ok"]:
         summary["error"] = result["error"]
 

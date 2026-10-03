@@ -1,6 +1,6 @@
 from database import get_connection
 from task_states import TaskStatus, validate_transition
-
+from worker_lock import worker_lock
 
 def claim_next_task():
     connection = get_connection()
@@ -56,11 +56,12 @@ def claim_next_task():
 
 
 if __name__ == "__main__":
-    task = claim_next_task()
+    with worker_lock():
+        task = claim_next_task()
 
-    if task is None:
-        print("No queued tasks available")
-    else:
-        print(f"Claimed task: {task['id']}")
-        print(f"Goal: {task['goal']}")
-        print(f"Status: {task['status']}")
+        if task is None:
+            print("No queued tasks available")
+        else:
+            print(f"Claimed task: {task['id']}")
+            print(f"Goal: {task['goal']}")
+            print(f"Status: {task['status']}")
