@@ -330,6 +330,23 @@ textarea { resize: vertical; }
           links.append(queueButton, queueMessage);
         }
         card.append(heading, metadata, links);
+        const resultPanel = document.createElement("section");
+const resultButton = document.createElement("button");
+resultButton.type = "button";
+resultButton.textContent = "View result and evidence";
+resultButton.style.marginTop = "16px";
+
+resultButton.addEventListener("click", async () => {
+  resultButton.disabled = true;
+
+  try {
+    await showTaskResult(task, resultPanel);
+  } finally {
+    resultButton.disabled = false;
+  }
+});
+
+card.append(resultButton, resultPanel);
         if (
           task.status === "waiting_for_input" ||
           task.status === "waiting_for_approval"
@@ -706,6 +723,130 @@ async function showPendingActions(task, panel) {
     }
   } catch (error) {
     status.textContent = error.message || "Could not load actions.";
+  }
+}
+async function showTaskResult(task, panel) {
+  panel.replaceChildren();
+
+  const status = document.createElement("p");
+  status.setAttribute("role", "status");
+  status.textContent = "Loading verification...";
+  panel.append(status);
+
+  try {
+    const response = await fetch(
+      `/tasks/${encodeURIComponent(task.id)}/result`,
+      { cache: "no-store" }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Could not load result (HTTP ${response.status}).`);
+    }
+
+    const data = await response.json();
+
+    if (
+      data.task_id !== task.id ||
+      data.organization_id !== task.organization_id
+    ) {
+      throw new Error("The result does not match this task.");
+    }
+
+    if (!data.verification) {
+      status.textContent =
+        `Task status: ${data.task_status}. No verification report saved yet.`;
+      return;
+    }
+
+    const verification = data.verification;
+    const report = verification.report;
+
+    status.textContent =
+      report.passed === true
+        ? "Verification passed."
+        : report.passed === false
+          ? "Verification failed."
+          : "Verification outcome unavailable.";
+
+    const timestamp = document.createElement("p");
+    timestamp.className = "muted";
+    timestamp.textContent =
+      `Recorded (UTC): ${verification.created_at}`;
+
+    panel.append(timestamp);
+
+    if (report.vendor_id) {
+      const vendor = document.createElement("p");
+      vendor.textContent = `Vendor ID: ${report.vendor_id}`;
+      vendor.style.overflowWrap = "anywhere";
+      panel.append(vendor);
+    }
+
+    const checks = document.createElement("ul");
+
+    for (const [name, value] of Object.entries(report.checks || {})) {
+      const item = document.createElement("li");
+      const passed = typeof value === "boolean"
+        ? value
+        : value?.matches;
+
+      const label = passed === true
+        ? "PASS"
+        : passed === false
+          ? "FAIL"
+          : "UNKNOWN";
+
+      item.textContent = `${label}: ${name.replaceAll("_", " ")}`;
+
+      if (value && typeof value === "object") {
+        const comparison = document.createElement("div");
+        comparison.className = "muted";
+        comparison.style.overflowWrap = "anywhere";
+        comparison.textContent =
+          `Expected: ${JSON.stringify(value.expected)} | ` +
+          `Actual: ${JSON.stringify(value.actual)}`;
+        item.append(comparison);
+      }
+
+      checks.append(item);
+    }
+
+    panel.append(checks);
+
+    if (report.screenshot_path) {
+      const screenshotUrl =
+        `/tasks/${encodeURIComponent(task.id)}/screenshot` +
+        `?event=${encodeURIComponent(verification.event_id)}`;
+
+      const link = createLink("Open screenshot", screenshotUrl);
+      const imageStatus = document.createElement("p");
+      imageStatus.setAttribute("role", "status");
+      imageStatus.textContent = "Loading screenshot...";
+
+      const image = document.createElement("img");
+      image.alt = "Saved browser evidence for this vendor inspection";
+      image.style.display = "block";
+      image.style.width = "100%";
+      image.style.height = "auto";
+      image.style.marginTop = "16px";
+      image.style.border = "1px solid #dbe2ec";
+      image.style.borderRadius = "8px";
+
+      image.addEventListener("load", () => {
+        imageStatus.textContent = "";
+      });
+
+      image.addEventListener("error", () => {
+        image.hidden = true;
+        imageStatus.textContent =
+          "Screenshot could not be loaded. The saved report is shown above.";
+      });
+
+      panel.append(link, imageStatus, image);
+      image.src = screenshotUrl;
+    }
+  } catch (error) {
+    status.textContent = error.message || "Could not load verification.";
   }
 }
   </script>

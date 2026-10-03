@@ -684,3 +684,114 @@ def get_pending_actions(task_id: str):
         "input_requests": input_requests,
         "approvals": approvals,
     }
+
+@app.get("/tasks/{task_id}/screenshot", include_in_schema=False)
+def get_task_screenshot(task_id: str):
+    result = get_task_result(task_id)
+    verification = result["verification"]
+
+    if verification is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No verification evidence for this task",
+        )
+
+    report = verification["report"]
+
+    if report.get("task_id") != task_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Evidence does not match this task",
+        )
+
+    screenshot_value = report.get("screenshot_path")
+
+    if not isinstance(screenshot_value, str) or not screenshot_value:
+        raise HTTPException(
+            status_code=404,
+            detail="No screenshot for this task",
+        )
+
+    evidence_root = (
+        Path(__file__).resolve().parent / "evidence"
+    ).resolve()
+
+    screenshot = Path(screenshot_value).resolve()
+
+    if (
+        not screenshot.is_relative_to(evidence_root)
+        or screenshot.suffix.lower() != ".png"
+        or not screenshot.is_file()
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Screenshot unavailable",
+        )
+
+    with screenshot.open("rb") as image:
+        if image.read(8) != b"\x89PNG\r\n\x1a\n":
+            raise HTTPException(
+                status_code=404,
+                detail="Screenshot unavailable",
+            )
+
+    return FileResponse(
+        screenshot,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+@app.get("/tasks/{task_id}/result")
+def get_task_result(task_id: str):
+    connection = get_connection()
+
+    try:
+        task = connection.execute(
+            "SELECT * FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+
+        if task is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Task not found",
+            )
+
+        event = connection.execute(
+            """
+            SELECT id, event_type, message, created_at
+            FROM task_events
+            WHERE task_id = ?
+              AND event_type IN (
+                  'verification_passed',
+                  'verification_failed',
+                  'inspection_verification_passed',
+                  'inspection_verification_failed'
+              )
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    verification = None
+
+    if event is not None:
+        verification = {
+            "event_id": event["id"],
+            "event_type": event["event_type"],
+            "created_at": event["created_at"],
+            "report": json.loads(event["message"]),
+        }
+
+    return {
+        "task_id": task_id,
+        "organization_id": task["organization_id"],
+        "task_status": task["status"],
+        "verification": verification,
+    }
